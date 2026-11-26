@@ -1,6 +1,6 @@
 ---
 name: bodycomp-package
-description: Install, wire and use the Arandu Bodycomp package (Go, Arandu) in an application. Use when the request is to "install Arandu Bodycomp", "add bodycomp to the app", "go get github.com/hyz-is/arandu-bodycomp", "wire it into bootstrap/app.go", "register the module", "use the bodycomp routes", "everything under /bodycomp returns 403", "403 forbidden from bodycomp", "it redirects to /auth/login", "the table does not exist", "no such table", "change where it is mounted", "let admins read it", or when a project's go.mod already requires github.com/hyz-is/arandu-bodycomp. Covers the wiring and where each part goes, publishing and linking the views, the Config fields, none of them required, the routes, their names and the session they need, why the policy refuses everything until somebody opens it, and the migration step that is not optional.
+description: Estimate body composition in an Arandu application with the Arandu Bodycomp package (Go, github.com/hyz-is/arandu-bodycomp). Use when the request is to "estimate body fat", "body composition", "digital bioimpedance", "bioimpedancia digital", "BMI and waist ratios", "Navy body fat", "RFM", "CUN-BAE", "skinfolds", "Jackson Pollock", "FFMI", "resting energy", "TDEE", "compare two measurements", "guided measurement conversation", "parse 1,75 m or 154 lb", "go get github.com/hyz-is/arandu-bodycomp", or when the application has its own body-fat, BMI, TMB or Mifflin helper, or when a project's go.mod already requires github.com/hyz-is/arandu-bodycomp. Covers what the package computes, the call order, errors that mean ask again, storing a Result and a Session, passing the clock in, the disclaimer, and what stays with the application.
 license: MIT
 metadata:
   audience: app
@@ -8,10 +8,10 @@ metadata:
 
 # Using Arandu Bodycomp
 
-An Arandu package with one entity, its own table, its own routes and its own
-policy. It is registered by hand — there is no service provider, no container
-and no discovery, so if a line is not written in the application, it does not
-happen.
+A library that estimates body composition from self-measurements with published
+formulas. It has no route, no table and no policy, so nothing about it goes in
+`bootstrap/app.go`: there is no `New`, no line in `k.Register` and no
+`aru migrate`. Import it and call it.
 
 ## Install
 
@@ -19,196 +19,73 @@ happen.
 go get github.com/hyz-is/arandu-bodycomp
 ```
 
-## The wiring, and where each part goes
-
-All of it is in `bootstrap/app.go`. `aru make:module` does not edit this file for
-you, and the views the package carries have to be published and linked, below.
-
-The import, with the other module imports:
-
 ```go
-import (
-	bodycomp "github.com/hyz-is/arandu-bodycomp"
-)
+import bodycomp "github.com/hyz-is/arandu-bodycomp"
 ```
 
-The construction, in `App`, once `NewAppServiceProvider` has returned. `New`
-refuses a wiring that cannot work and `Configure` has no way to return that
-error, so the module is built where the error can leave. The database and the
-session store are the ones the framework built from the configuration:
+## If the application already does this itself
 
-```go
-	bodycompModule, err := bodycomp.New(bodycomp.Config{}, drivers.DB, drivers.Sessions)
-	if err != nil {
-		_ = drivers.Close()
-		return nil, err
-	}
-```
+Replace it; do not wrap it. A second set of coefficients in the application is
+the one that drifts from the publication.
 
-And the registration, in the `WithProviders(...)` chain the builder is made of:
-
-```go
-	return Configure(cfg, drivers, app).
-		WithProviders(bodycompModule).
-		WithVersion(version, commit).
-		Create()
-```
-
-`New` returns an error rather than starting half-wired. It refuses a
-configuration that cannot work, a nil database handle and a nil session store,
-so a wiring mistake costs one restart instead of arriving as a nil dereference
-on the first request that needed it.
-
-## Then publish and link the views
-
-The package carries the markup of its own pages and hands it over, and it
-refuses to boot until the project has linked it. Publish them, then compile them:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-aru view:build
-```
-
-The first line only previews; nothing is written without `--apply`. The files
-land under `resources/views/modules/bodycomp/` and are the project's from
-then on. `aru view:build` compiles them, and the compiled package is imported
-with the other blank imports of `bootstrap/app.go`:
-
-```go
-	_ "your/module/path/storage/framework/views/modules/bodycomp"
-```
-
-**Symptom to recognise:** the application stops at boot with an error naming the
-view, the command and the import. One of the steps is missing, and the import
-is the usual one.
-
-## Then run the migrations
-
-```bash
-aru migrate
-```
-
-Not optional, and not automatic. The package owns a table, which is why its
-`arandu.mod.toml` declares `migrations = true` — that declaration is how an
-installer finds out before deploying rather than from the first request.
-
-`aru migrate` is a step in the pipeline and never a call at the start of the
-process: with N replicas, N migrations race each other.
-
-**Symptom to recognise:** `no such table`, or `relation does not exist`, from a
-route that authorized correctly. The migration has not run.
-
-## Configuration
-
-| field | required | meaning |
-| --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/bodycomp` |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200 |
-
-`bodycomp.Config{}` is a complete configuration. There is no tenant to pass:
-every route needs a session, and the tenant of every statement comes from
-`data.Tenant(g)`, off the Grant of whoever is signed in. Passing a value the
-request named — a path segment, a header, a subdomain read off the URL — is what
-`TestNoTenantIsReadOutOfTheRequest` fails on in the package. In an application
-the same mistake is `aru doctor`'s `tenant-from-request`; in a package nothing
-but the package's own suite looks.
-
-`PageSize` above 200 is an error from `New`, not a silent 200. A number somebody
-wrote and did not get is worse than a number somebody wrote and was told about.
-
-## Routes
-
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/bodycomp` | `bodycomp.index` |
-| `GET` | `/bodycomp/{id}` | `bodycomp.show` |
-| `POST` | `/bodycomp` | `bodycomp.store` |
-
-Every route sits behind `RequireAuth`, mounted by the package itself. A request
-with no session is sent to `/auth/login` — 303, or `YPY-Redirect` for a YPY
-request — and comes back to the address it asked for after signing in. That is
-the sign-in screen the starter kit publishes; an application without one sees
-a 404 there.
-
-**Symptom to recognise:** every route of the package redirects to
-`/auth/login`. Nobody is signed in on that request: the session cookie did not
-arrive, or the session store passed to `New` is not the one the application
-signs people in with.
-
-Build URLs from the names, never by writing the path a second time. `aru
-route:list` shows them grouped by module. Under a custom `Prefix` the paths move
-and the names do not.
-
-`GET /bodycomp` answers `{"data": {"items": [...]}}`, and adds
-`"next_cursor"` beside `data` when a further page exists. Pass it back as
-`?cursor=`. A page shorter than `PageSize` is the last one and carries no
-cursor.
-
-`TenantID` is not in any response. That is deliberate: it names a customer's
-identifier and the response is a declared list of fields rather than the entity.
-
-## Every route refuses everybody, until you open the policy
-
-This is the state the package ships in, and it is not a bug to work around.
-`BodycompPolicy` denies every action and has no branch that allows one:
-
-```
-403 Forbidden
-```
-
-is what a correctly installed, correctly migrated, correctly wired package
-answers to an administrator who is signed in, on day one.
-
-Opening an action means writing the rule that opens it, in the package's
-`policy.go`, inside the block that says so:
-
-```go
-	// arandu:begin custom
-	if a == BodycompView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
-```
-
-What is not written there stays closed, including every action added later.
-There are five actions — `BodycompView`, `BodycompList`, `BodycompCreate`,
-`BodycompUpdate`, `BodycompDelete` — and opening one opens exactly one.
-
-**Do not open it from the application.** There is no hook, no override and no
-config flag for the policy, and adding one would be a second place where
-authorization is decided. If the rules this application needs are not the rules
-the package ships, the change belongs in the package.
-
-## What the answers mean
-
-| status | what happened |
+| the application has | it becomes |
 | --- | --- |
-| `303` to `/auth/login` | there is no session on the request |
-| `403` | the policy refused, or no rule allows the action yet |
-| `404` | no row with that id in this tenant |
-| `303` back to the page the request came from | the input was rejected; the messages and what was typed are in the flash |
-| `422` `application/problem+json` | the input was rejected and the request asked for JSON; the messages are in `errors`, keyed by field |
+| a BMI or a waist-to-height helper | `bodycomp.BMI`, `bodycomp.WaistToHeight`, or the fields of `Result` |
+| a Navy, RFM or skinfold body-fat formula | `bodycomp.Estimate`, which runs every method the data allows and returns the consensus |
+| a Mifflin or Katch-McArdle energy helper | `Result.Energy`, or `bodycomp.MifflinStJeor` and `bodycomp.KatchMcArdle` |
+| a parser of "1,75 m", "70 kg", "154 lb" | `bodycomp.ParseLengthCM`, `ParseMassKG`, `ParseSkinfoldMM` |
+| a before-and-after of two measurements | `bodycomp.Compare` and `Delta.Summary` |
+| a hand-written question-by-question flow | `bodycomp.Session` |
 
-A request that asks for JSON (an `Accept` naming `application/json`, or an XHR
-that is not a YPY request) gets the 403 and the 404 as problem documents too. The
-sign-in redirect is the same for every client.
+## The call order
 
-The package does not choose these: its handlers return what the service
-returned, and the framework's router answers it. A refusal carries no detail
-beyond the status and its standard sentence. Telling a client why a policy said
-no tells it what exists and what does not, one request at a time. The reason is
-in the log.
+```go
+issues := bodycomp.Validate(input)          // optional: the same checks, as a list
+res, err := bodycomp.Estimate(input)
+var invalid *bodycomp.ValidationError
+if errors.As(err, &invalid) {
+    // Bad input. Ask again with invalid.Issues; never show a number.
+}
+text := bodycomp.FormatResult(res)          // pt-BR chat message, with the disclaimer
+delta := bodycomp.Compare(previous, res, days)
+```
 
-Anything else is a 500 and the framework's error page in development. The
-package returns unexpected errors rather than swallowing them, so a route that
-answers 200 with an empty body is not something it does.
+## Rules to keep when calling it
 
-## Reporting a problem
+- **Pass the clock in.** `NewSession(now, ...)`, `Answer(text, now)` and
+  `ParseAge(text, now)` take the time; the package never reads it. The caller
+  decides what "now" is, which is also what makes a test reproducible.
+- **Show the disclaimer.** `Result.Disclaimer` is always set. A screen or a
+  message that shows an estimate shows it, and never writes that a person has
+  or lacks a condition.
+- **Ask again on a `*ValidationError`.** It is not a failure to log; it is the
+  next question. A likely slip (a lost decimal point, pounds typed as
+  kilograms) comes back as a correction the person confirms.
+- **A minor ends it.** `Reply.Reason == bodycomp.ReasonMinor` means the person is
+  under 18: show the refusal and keep nothing.
+- **Store a `Result` and a `Session` as JSON,** and read them back with
+  `json.Unmarshal`. A `Session` saved after each `Answer` lets a person stop and
+  `Resume()` days later.
 
-Issues and pull requests go to the repository the module path names,
-`github.com/hyz-is/arandu-bodycomp`, which belongs to `hyz-is`. A vulnerability goes to the
-private advisory form named in that repository's `SECURITY.md`, and never into
-an issue.
+## What stays with the application
 
-MIT licensed. Copyright HYZIS.
+The package stores nothing and authorizes nothing, so the application decides,
+with its own Arandu modules:
+
+- the table, owned by an Organization, written with the Grant's tenant
+  (`data.Tenant(g)`), never a tenant from the request;
+- who may read a result: its own Policy, with `hyz-is/arandu-permission` for roles;
+- the consent a person gives before measurements are kept;
+- the log of who read what, with `hyz-is/arandu-activitylog`.
+
+Body measurements are health data. Treat them as sensitive: never in a log line,
+a URL or a public bucket.
+
+## Symptoms
+
+| you see | it means |
+| --- | --- |
+| `*bodycomp.ValidationError` from `Estimate` | an error-level issue in the input; read `Issues` and ask again |
+| `Reply.Cancelled` with `Reason == "minor"` | the person is under 18; the session kept nothing |
+| a body fat that differs from another site's | each method has a published error of a few points; `Result.Agreement` says how close the methods are |
+| `Delta.FatWithinNoise` is true | the change is smaller than the formulas' own error; say so, do not celebrate it |

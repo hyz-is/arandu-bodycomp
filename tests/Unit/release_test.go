@@ -8,21 +8,24 @@ import (
 	"testing"
 )
 
-func TestTheManifestFrameworkFloorMatchesGoMod(t *testing.T) {
-	root := packageRoot(t)
-	goMod := readReleaseFile(t, root, "go.mod")
-	manifest := readReleaseFile(t, root, "arandu.mod.toml")
+// TestTheModuleRequiresNothing holds the dependency list at empty. The engine
+// is compiled into other people's builds, so every require is a download and an
+// audit surface for each of them, and a body-composition formula needs none.
+func TestTheModuleRequiresNothing(t *testing.T) {
+	goMod := readReleaseFile(t, packageRoot(t), "go.mod")
 
-	required := captureReleaseValue(t, goMod,
-		`(?m)^\s*github\.com/arandu-io/framework v([0-9]+\.[0-9]+)\.[0-9]+\s*$`,
-		"Framework version in go.mod")
-	declared := captureReleaseValue(t, manifest,
-		`(?m)^framework = ">= ([0-9]+\.[0-9]+)"$`,
-		"Framework floor in arandu.mod.toml")
-
-	if declared != required {
-		t.Fatalf("manifest Framework floor = %s, want %s from go.mod", declared, required)
+	if regexp.MustCompile(`(?m)^(require\b|\t[a-z0-9.\-]+\.[a-z]+/)`).MatchString(goMod) {
+		t.Error("go.mod has a require; this package depends on the Go standard library and nothing else")
 	}
+}
+
+// TestTheManifestDeclaresAFrameworkFloor keeps the floor an installer reads.
+// It is not derived from go.mod, because the framework is not in it: the
+// package imports none, and the floor names the Framework release the
+// applications that install it are built on.
+func TestTheManifestDeclaresAFrameworkFloor(t *testing.T) {
+	manifest := readReleaseFile(t, packageRoot(t), "arandu.mod.toml")
+	captureReleaseValue(t, manifest, `(?m)^framework = ">= ([0-9]+\.[0-9]+)"$`, "Framework floor in arandu.mod.toml")
 }
 
 func TestTheReleaseSkillUsesTheManifestFrameworkFloor(t *testing.T) {
@@ -39,79 +42,8 @@ func TestTheReleaseSkillUsesTheManifestFrameworkFloor(t *testing.T) {
 	}
 }
 
-// releasedChangelog is CHANGELOG.md with the [Unreleased] section removed.
-//
-// Everything a tag shipped has to be under a version heading. The section above
-// the first one is where work waits, and a release that forgets to move it is a
-// published version whose own changelog calls its contents unreleased -- which
-// is what a released version of a package cloned from here once did.
-//
-// A package that has released nothing has no version heading, and the tests
-// reading this skip rather than fail: there is nothing yet to have forgotten.
-func releasedChangelog(t *testing.T) string {
-	t.Helper()
-	body := readReleaseFile(t, packageRoot(t), "CHANGELOG.md")
-	first := regexp.MustCompile(`(?m)^## \[[0-9]`).FindStringIndex(body)
-	if first == nil {
-		t.Skip("nothing released yet: this package has no versioned changelog entry")
-	}
-	return body[first[0]:]
-}
-
-// TestEveryActionIsNamedInAReleasedChangelogEntry is the gate that catches a
-// tag pushed without filing what it shipped.
-//
-// An action is added in the same change that adds the capability behind it, so
-// an action still sitting in [Unreleased] means the version that introduced it
-// went out undocumented. It is the cheapest signal of that, and it needs no git
-// history to read.
-func TestEveryActionIsNamedInAReleasedChangelogEntry(t *testing.T) {
-	policy := readReleaseFile(t, packageRoot(t), "policy.go")
-	released := releasedChangelog(t)
-
-	names := regexp.MustCompile(`(?m)^\t([A-Z][A-Za-z]*) security\.Action = `).FindAllStringSubmatch(policy, -1)
-	if len(names) == 0 {
-		t.Fatal("policy.go declares no actions")
-	}
-	for _, name := range names {
-		if !strings.Contains(released, "`"+name[1]+"`") {
-			t.Errorf("no released changelog entry names %s", name[1])
-		}
-	}
-}
-
-// TestEveryMigrationIsNamedInAReleasedChangelogEntry holds the same for schema.
-//
-// A migration is the one thing an operator has to run before a version serves,
-// so a version that shipped one and did not say so is a version that fails at
-// the first request against a column that is not there.
-func TestEveryMigrationIsNamedInAReleasedChangelogEntry(t *testing.T) {
-	module := readReleaseFile(t, packageRoot(t), "module.go")
-	released := releasedChangelog(t)
-
-	ids := regexp.MustCompile(`"([0-9]{8}_[0-9]{4}_[a-z_]+)"`).FindAllStringSubmatch(module, -1)
-	if len(ids) == 0 {
-		t.Fatal("module.go declares no migrations")
-	}
-	seen := map[string]bool{}
-	for _, id := range ids {
-		if seen[id[1]] {
-			continue
-		}
-		seen[id[1]] = true
-		if !strings.Contains(released, id[1]) {
-			t.Errorf("no released changelog entry names migration %s", id[1])
-		}
-	}
-}
-
 // TestEveryChangelogVersionHasUpgradeNotes keeps the two files describing the
 // same set of releases.
-//
-// They drifted once in the other direction: two packages cloned from here
-// carried this repository's own release history, renamed into them by
-// configure, numbered over the tags of the same name there. The history is
-// inside a configure:template section now, so a clone starts without it.
 func TestEveryChangelogVersionHasUpgradeNotes(t *testing.T) {
 	root := packageRoot(t)
 	changelog := readReleaseFile(t, root, "CHANGELOG.md")
@@ -142,19 +74,6 @@ func TestEveryChangelogVersionHasUpgradeNotes(t *testing.T) {
 		}
 	}
 }
-
-// The section markers, spelled in halves.
-//
-// configure removes whole lines from the first marker to the second in every
-// file it reads, this one included. A test naming them in full would be a test
-// configure deleted the middle of, and that is not a thought experiment: it
-// happened on the first run, and the clone failed to build with
-// "undefined: start".
-const (
-	markerHalf = "configure:template"
-	openMarker = markerHalf + "-start"
-	shutMarker = markerHalf + "-end"
-)
 
 func TestCIGuardsIncompatibleAPIChanges(t *testing.T) {
 	ci := readReleaseFile(t, packageRoot(t), ".github/workflows/ci.yml")
@@ -239,4 +158,27 @@ func captureReleaseValue(t *testing.T, body, pattern, label string) string {
 		t.Fatalf("%s is missing", label)
 	}
 	return match[1]
+}
+
+// currentVersion is the release this working tree is preparing.
+//
+// It is written here and compared against the changelog rather than read out of
+// it: a test that took the number from the file it checks would pass on a file
+// that lost its heading.
+const currentVersion = "0.1.0"
+
+// TestTheChangelogAndTheUpgradeGuideAgreeOnTheVersion keeps the two pages a
+// person reads before upgrading from naming different releases, and the
+// release workflow from finding no notes to publish.
+func TestTheChangelogAndTheUpgradeGuideAgreeOnTheVersion(t *testing.T) {
+	root := packageRoot(t)
+	changelog := readReleaseFile(t, root, "CHANGELOG.md")
+	upgrade := readReleaseFile(t, root, "UPGRADE.md")
+
+	if got := strings.Count(changelog, "## ["+currentVersion+"] - "); got != 1 {
+		t.Fatalf("v%s changelog headings = %d, want exactly one pre-versioned entry", currentVersion, got)
+	}
+	if !regexp.MustCompile(`(?m)^## v` + regexp.QuoteMeta(currentVersion) + `$`).MatchString(upgrade) {
+		t.Fatalf("UPGRADE.md has no v%s entry", currentVersion)
+	}
 }

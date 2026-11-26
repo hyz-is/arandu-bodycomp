@@ -3,7 +3,7 @@
 Procedures an assistant follows when working on this package.
 
 They live in `.agents/skills/<name>/SKILL.md`, which is the path the coding
-assistants read from — Cursor, Codex, Cline, Copilot, Gemini CLI, Amp, OpenCode,
+assistants read from: Cursor, Codex, Cline, Copilot, Gemini CLI, Amp, OpenCode,
 Warp, Zed and the rest all look there. It is one directory rather than a file
 per vendor, so a skill written once is read by whatever this package is being
 written with.
@@ -15,43 +15,32 @@ names the situation you are in rather than the topic it covers.
 
 | skill | when it fires |
 | --- | --- |
-| `bodycomp-policy` | opening an action, adding an authorized Model-backed use case, or anything answering 403 |
-| `bodycomp-module` | adding a route, a handler, a config field, a response field or a migration |
-| `bodycomp-release` | the gates, the manifest, a dependency, a version, a tag |
-| `bodycomp-vault-notes` | writing the note, the gap or the journal entry, when this checkout sits inside the Arandu Obsidian vault |
-| `bodycomp-package` | installing and wiring this package **into an application** |
+| `bodycomp-release` | the gates, the manifest, a dependency, a formula change, a version, a tag |
+| `bodycomp-package` | estimating body composition, comparing two measurements or running the guided conversation **in an application** |
 
-The last one has a different audience from the other three, and that is on
+The template this package started from carried a `-policy`, a `-module` and a
+`-vault-notes` skill. The first two taught the HTTP module the template ships,
+and this package removed it: there is no policy to open and no route, handler
+or migration to add.
+
+`bodycomp-package` has a different audience from the other one, and that is on
 purpose: it travels with the package so that an assistant working in somebody
-else's project — the one running `go get` — has the wiring, the migration step
-and the closed policy in front of it instead of guessing.
+else's project, the one running `go get`, has the call order, the errors that
+mean "ask again" and the limits of an estimate in front of it instead of
+writing a body-fat formula of its own.
 
 Its frontmatter says so, under `metadata`, with `audience: app`. That line is
 what `aru skills:sync` reads to copy the skill into an application whose
 `go.mod` requires this package, and no other skill here carries it: an
 application that received the release procedure would follow it.
 
-`bodycomp-vault-notes` fires on a condition rather than on a task: it applies
-only when `MOC-arandu.md`, `plans/cmd/audit-vault/` and `45-modules/` are actually
-beside this checkout. Outside the vault it is inert, and it says so first, so a
-package cloned somewhere else never grows a folder tree imitating one.
-
 ## Why these exist
 
-The audience of the first three is somebody changing the package. The common
-failure modes are a provider, a container lookup, a hand edit to the generated
-`BodycompQuery.go`, a rule of the entity written into the Service instead of the
-custom block of `model.go`, a handler that loads the session or maps an error to
-a status itself, a CRUD Repository beside the Model, a tenant read from the URL,
-or a Policy branch that returns nil for administrators "for now". None belongs
-here, and the last three are security failures rather than style disagreements.
-
-The package is built to be checked rather than trusted. Its denial tests use a
-nil database, so reaching even the generated query constructor before
-authorization panics. The structural twin reads every exported Service method
-and checks the same order on the allowed path, and reads every handler for the
-subject and the status it must leave to the framework. Running
-`go test -race ./...` exercises all of it.
+The common failure modes when changing this package are a coefficient tuned
+until a number looks right, a threshold moved without a line in the changelog, a
+call to the clock inside a function that should take `now`, a dependency added
+for convenience, and wording that turns an estimate into a diagnosis. None
+belongs here.
 
 ## Adding your own
 

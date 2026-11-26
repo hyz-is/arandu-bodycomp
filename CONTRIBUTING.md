@@ -18,53 +18,32 @@ The two filters on `gofmt` are not preference. `gofmt` is the only tool in the
 chain that ignores build tags, so it reads files the compiler deliberately
 excludes; `testdata/` holds fixtures that are invalid on purpose.
 
-A change to the entity in `model.go` is followed by `aru model:build`, which
-rewrites `BodycompQuery.go`, and the regenerated file goes in the same commit.
-`aru model:build --check` exits 1 when the committed file is missing, stale or
-edited by hand.
-
 ## What a change has to keep true
 
-Four properties are the reason this package is what it is. A change that breaks
-one of them will not be merged, whatever else it improves.
+1. **A formula is a published formula.** Each function in `formulas.go` is the
+   printed equation, with its source in the doc comment, and its test compares
+   it with a value computed apart from the package. A change to a coefficient
+   needs the publication that prints it; it is never tuned to make a result look
+   better.
+2. **An estimate, never a diagnosis.** `Estimate` always sets `Disclaimer`, and
+   no text the package writes says that a person has or lacks a condition.
+3. **A minor is refused, and nothing is kept.**
+4. **This stays a library.** No route, no table, no policy, no `Module`, no
+   `init`, no clock, and no import beyond the standard library.
+   `TestThePackageIsALibrary` holds all of it.
+5. **`arandu.mod.toml` matches the code.** Adding an outbound call, a file
+   access or a process means declaring it there in the same commit.
 
-1. **The policy denies by default.** No branch allows every action, and none is
-   added. Opening an action means writing the rule that opens it.
-2. **Every Service method authorizes before reaching the Model.** The Grant is
-   then required by the Model terminal; constructing `Bodycomps(db)` first is
-   already the wrong order and the structural audit rejects it.
-3. **The tenant comes from `data.Tenant(g)`.** Not from the path, the body, the
-   query string or a header, on any code path, including the read paths.
-4. **`arandu.mod.toml` matches the code.** Adding an outbound call, a file
-   write or a process means declaring it there in the same commit.
-
-CRUD stays on `Bodycomps(db)` and its generated query. Add a Repository only for
-a specialized complex query, read model, report, export or raw SQL contract; a
-wrapper around `Find`, `Get`, `Save` or `Delete` is a second data path.
-
-Every query starts at `Bodycomps(s.db)`. The constructor returns one mutable
-query, so a second chain begun from a value held in a variable carries the
-clauses of the first -- and that compiles.
-
-Model-backed entities stay pointers. A copy of `Bodycomp` keeps the model of the
-row it was copied from, and the model refuses to write through the copy with
-`model.ErrUnwired`. Response resources are the deliberate snapshot boundary;
-Service results are not.
-
-The rules of the entity itself go in the custom block of `model.go`, as pure
-methods. The Service orchestrates, and holds no rule the entity could hold.
-
-Handlers read who is asking with `ctx.User()`, which `RequireAuth` filled, and
-return the error the Service returned for the router to answer. A handler that
-loads the session or maps an error to a status fails
-`TestHandlersLeaveTheSubjectAndTheStatusToTheFramework`.
+No real person's measurements go into a test, a comment or a document.
 
 ## Style
 
 Everything in the source is in English: identifiers, doc comments, internal
 comments, error messages, log messages, and the names and messages of tests.
 `pkg.go.dev` publishes the doc comments, and its readers are users of this
-package.
+package. The text a person reads in a chat (the questions of the conversation,
+the validation messages, `FormatResult`, the method explanations) is data the
+package ships, in Brazilian Portuguese, and stays so.
 
 Every exported symbol carries a doc comment saying what it does. The comment
 documents the symbol and nothing else: no dates, no issue numbers, no

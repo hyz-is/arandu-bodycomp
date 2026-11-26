@@ -4,8 +4,22 @@
 
 # Arandu Bodycomp
 
-An Arandu package. It registers its own routes, owns its own table, and decides
-for itself who may reach either.
+A digital bioimpedance for an [Arandu](https://github.com/arandu-io/framework)
+application: it estimates body composition from what a person can measure at
+home (height, weight, tape-measure circumferences and, optionally, caliper
+skinfolds), compares two estimates over time, and drives the guided
+conversation that collects the measurements.
+
+Every number it returns is an **estimate, not a diagnosis**. It never reads a
+photograph: a percentage comes only from the published formulas below, and every
+result carries a disclaimer that says so.
+
+It is a library. It registers no route, owns no table and decides no
+authorization, so there is nothing to wire in `bootstrap/app.go`, nothing to
+construct, and no `aru migrate` to run. It is the Go standard library alone:
+the module has no dependency, does no I/O, holds no state and never reads the
+clock (the caller passes "now" in). Storing measurements, photographs, consent
+and who may see a result stay with the application that installs it.
 
 ## Install
 
@@ -13,227 +27,130 @@ for itself who may reach either.
 go get github.com/hyz-is/arandu-bodycomp
 ```
 
-## Wire it
+```go
+import bodycomp "github.com/hyz-is/arandu-bodycomp"
+```
 
-An Arandu application registers a module explicitly. There is no service
-provider, no container and no discovery, so these are the lines to paste into
-`bootstrap/app.go`, and the views add one import below.
+`arandu.mod.toml` declares no capability: no network, no filesystem, no
+process, no migration.
 
-The import, with the other module imports:
+## Use it
 
 ```go
-import (
-	bodycomp "github.com/hyz-is/arandu-bodycomp"
-)
+// 1. Parse what a person types.
+cm, err    := bodycomp.ParseLengthCM("1,75 m")      // 175
+kg, err    := bodycomp.ParseMassKG("154 lb")        // 69.85
+mm, err    := bodycomp.ParseSkinfoldMM("1,2 cm")    // 12
+years, err := bodycomp.ParseAge("15/03/1990", now)  // completed years
+sex, err   := bodycomp.ParseSex("mulher")
+
+// 2. Validate: typos, impossible values, relations between values.
+issues := bodycomp.Validate(input)
+issues  = bodycomp.ValidateValue(bodycomp.Waist, 850) // suggests 85
+
+// 3. Estimate.
+res, err := bodycomp.Estimate(bodycomp.Input{
+    Sex: bodycomp.Male, AgeYears: 30, HeightCM: 180, WeightKG: 80,
+    Activity: bodycomp.Moderate,
+    Circumferences: map[bodycomp.Field]float64{
+        bodycomp.Neck: 40, bodycomp.Waist: 90, bodycomp.Hip: 100,
+    },
+})
+// A *bodycomp.ValidationError means bad input: ask again instead of
+// showing a number.
+text := bodycomp.FormatResult(res) // a chat message, in Brazilian Portuguese
+
+// 4. Evolution.
+delta := bodycomp.Compare(previous, res, days)
+lines := delta.Summary()
+
+// 5. The guided conversation, a state machine that serialises to JSON.
+s := bodycomp.NewSession(now, bodycomp.Prefill{Sex: bodycomp.Male, HeightCM: 180})
+reply := s.Start()            // the first question
+reply  = s.Answer("30", now)  // feed each message
+reply  = s.Resume()           // after a pause, from stored JSON
+// reply.Text is the message; reply.Done and reply.Result at the end;
+// reply.Reason == "minor" when the person is under 18.
+
+// 6. Texts for screens.
+bodycomp.Methods() // an explanation and a citation for each method
+bodycomp.Specs()   // label, range and "how to measure" tip for each measurement
 ```
 
-The construction, in `App`, once `NewAppServiceProvider` has returned. `New`
-refuses a wiring that cannot work and `Configure` has no way to return that
-error, so the module is built where the error can leave; the database and the
-session store are the ones the framework built from the configuration:
+During the conversation the person can send `ajuda`, `voltar`, `pular` and
+`cancelar`, and answer `sim` or `não` to a confirmation. The conversation, the
+validation messages and `FormatResult` are written in Brazilian Portuguese: they
+are data this package ships, and the identifiers and comments of the code are in
+English.
 
-```go
-	bodycompModule, err := bodycomp.New(bodycomp.Config{}, drivers.DB, drivers.Sessions)
-	if err != nil {
-		_ = drivers.Close()
-		return nil, err
-	}
-```
+## What it computes
 
-And the registration, in the `WithProviders(...)` chain the builder is made of:
+Each formula is one function with no validation and no rounding; `Estimate`
+decides what is plausible. Lengths are centimetres, masses kilograms and
+skinfolds millimetres.
 
-```go
-	return Configure(cfg, drivers, app).
-		WithProviders(bodycompModule).
-		WithVersion(version, commit).
-		Create()
-```
-
-Then, once, before the application serves:
-
-```bash
-aru migrate
-```
-
-This package owns a table, which is why the migration step is not optional and
-why `arandu.mod.toml` says `migrations = true`.
-
-## Publish the views
-
-This package carries the markup of its own pages and hands it over instead of
-rendering it from the inside, because a page you cannot edit is a page that says
-the wrong thing in your product.
-
-Look at what would be written, then write it:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-```
-
-Nothing is written without `--apply`. The preview lists every file as `create`,
-`update`, `unchanged` or `conflict`, and running the command a second time
-writes nothing. A file changed outside its `arandu:begin custom` markers is
-reported as a conflict and left alone; `--force` publishes over one, and even
-then what is inside the markers is carried forward.
-
-The files land under `resources/views/modules/bodycomp/`, and from that point
-they are yours. Nothing of this package is compiled beside them, so no view name
-is registered twice and no rule has to decide which of two files won — the
-consequence being that a view of this package that changes later does not reach
-a project that already published it.
-
-Two steps are left to you, and they are left to you because a command that
-edited `bootstrap/app.go` behind your back is a command whose output nobody can
-explain. Compile what was written:
-
-```bash
-aru view:build
-```
-
-and import the directory it wrote into, with the other imports:
-
-```go
-	_ "your/module/path/storage/framework/views/modules/bodycomp"
-```
-
-Without that import the views are not in the binary, and the module refuses to
-boot rather than answering the first request that reaches one of them with a
-500. The refusal names the view, the command and the import.
-
-## Configuration
-
-| field | required | meaning |
+| Output | Formula | Source |
 | --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/bodycomp`. |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200. |
+| BMI and band | kg/m², WHO adult bands | WHO Technical Report Series 894 (2000) |
+| Waist to height | waist / height, reference 0.5 | Ashwell & Hsieh, Int J Food Sci Nutr 2005;56:303 |
+| Waist to hip | waist / hip, WHO limits 0.90 (men) and 0.85 (women) | WHO expert consultation, Geneva 2008 |
+| Body fat, U.S. Navy | 495 / (1.0324 − 0.19077 log10(waist − neck) + 0.15456 log10(height)) − 450 (men); 495 / (1.29579 − 0.35004 log10(waist + hip − neck) + 0.22100 log10(height)) − 450 (women) | Hodgdon & Beckett, NHRC reports 84-11 and 84-29 (1984); Siri 1961 |
+| Body fat, RFM | 64 − 20 height / waist (+12 for women) | Woolcott & Bergman, Sci Rep 2018;8:10980 |
+| Body fat, CUN-BAE | from BMI, age and sex (nine terms) | Gómez-Ambrosi et al., Diabetes Care 2012;35:383 |
+| Body fat, skinfolds | Jackson and Pollock, three sites, then Siri | Jackson & Pollock, Br J Nutr 1978;40:497; Jackson, Pollock & Ward, Med Sci Sports Exerc 1980;12:175 |
+| Fat and lean mass | weight × the consensus body fat | |
+| FFMI and normalised FFMI | lean mass / height²; plus 6.1 (1.8 − height) | Kouri et al., Clin J Sport Med 1995;5:223 |
+| Resting energy | Mifflin-St Jeor; Katch-McArdle | Mifflin et al., Am J Clin Nutr 1990;51:241; McArdle, Katch & Katch |
+| Daily energy | resting × 1.2, 1.375, 1.55, 1.725, 1.9 | Harris-Benedict tradition, as in ACSM and McArdle texts |
+| Body fat band | essential, athlete, fitness, average | American Council on Exercise bands |
 
-The zero `Config{}` is a valid configuration. There is no tenant to set: every
-route needs a session, and the tenant of every statement is the one on the
-Grant of whoever is signed in.
+The consensus body fat is the median of the methods that ran (the mean of two).
+A method whose output falls outside 2 to 65 percent is dropped with a warning
+instead of being averaged in. `Agreement` says how close the methods are: a
+spread up to 3 points is high, up to 6 medium, above that low. A body-fat change
+smaller than 1.5 points between two dates is reported as no clear change,
+because the formulas' own error is larger than that.
 
-`New` returns an error rather than starting half-wired, so a setting that
-cannot work fails where it is written instead of on the first request that
-needed it.
+## Rules the code enforces
 
-## Routes
+- **Adults only**, 18 to 90. A minor ends the conversation, and nothing is kept.
+- **Out-of-range values are refused.** A likely slip (a lost decimal point,
+  pounds typed as kilograms, inches as centimetres) is offered as a correction
+  the person confirms. Relations are checked at entry: the waist larger than
+  the neck, the flexed arm not smaller than the relaxed one, a plausible BMI.
+- **Units**: cm, m, mm, in, ft+in, kg, lb and g, with Brazilian decimal commas
+  and common misspellings (`cms`, `quilos`, `7O` for 70).
+- **An estimate, never a diagnosis.** The disclaimer is always set on a result,
+  and the package never says a person has or lacks a condition.
 
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/bodycomp` | `bodycomp.index` |
-| `GET` | `/bodycomp/{id}` | `bodycomp.show` |
-| `POST` | `/bodycomp` | `bodycomp.store` |
+## What the application keeps
 
-Every one of them sits behind `RequireAuth`: a visitor with no session is sent
-to `/auth/login`, and the handler of a request that has one reads who is asking
-with `ctx.User()`. Behind the guard, every route is refused until the policy is
-opened. That is the state the package ships in, and it is deliberate.
+The package holds nothing, so an application that installs it decides all of
+this, under its own Arandu modules:
 
-A handler returns the error the service returned, and the router answers it: a
-policy refusal is 403, a record that is not there is 404, and a rejected input
-goes back where it came from with the messages in the flash. A request that asks
-for JSON gets the same statuses as `application/problem+json` documents, and a
-rejected input as a 422 with the messages keyed by field. No handler maps an
-error to a status itself.
+- where an estimate and a session are stored (`Session` and `Result` serialise
+  to JSON);
+- who may read them: through its own policies, Grants and tenant, with
+  `hyz-is/arandu-permission` for roles;
+- the consent a person gives before measurements are kept, and photographs, if
+  there are any;
+- the log of who read what, with `hyz-is/arandu-activitylog`.
 
-## Open the policy
-
-`policy.go` denies every action and has no branch that allows one. Open what
-this package needs, one action at a time, inside the custom block:
-
-```go
-	// arandu:begin custom
-	if a == BodycompView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
-```
-
-What is not written there stays closed, including every action added later.
-
-## The data path
-
-`Bodycomp` embeds `model.Model`, and `bodycompTable`, beside it in `model.go`,
-declares its table once. `aru model:build` generates `BodycompQuery.go` from
-it: `Bodycomps(db)`, which starts a `*BodycompQuery`, and `BodycompCollection`.
-The file is committed and never edited by hand; regenerate it after changing
-the entity, and `aru model:build --check` fails when it is out of date.
-
-`BodycompService` owns `*data.DB` and follows
-`validate -> security.Authorize -> Grant -> Model terminal`; handlers never hold
-the database or start a query. Every query starts at `Bodycomps(s.db)`: the
-constructor returns one mutable query, so a second chain begun from a value held
-in a variable would carry the clauses of the first.
-
-Create builds the row with `Bodycomps(s.db).New()` and writes `TenantID` from
-`data.Tenant(g)`. Find authorizes before reading and again against the row it
-found. List authorizes before building its scoped, allowlisted query. The table
-keeps its default `tenant_id` scope on every terminal.
-
-Terminals return `*Bodycomp` and `[]*Bodycomp`. Keep those pointers: a copy of a
-row keeps the model of the original, and the model refuses to write through it
-with `model.ErrUnwired`. `Resource` and `Collection` are explicit response
-snapshots and do not expose tenant or Model internals.
-
-The rules of the entity itself — an invariant, a derived value, a transition
-such as `Rename` guarded by `CanRename` — go in the custom block of `model.go`,
-as pure methods: no database, no network, no clock read inside, no Grant. The
-service orchestrates: it validates, authorizes, calls those rules and saves
-with the Grant.
-
-There is no CRUD Repository. Add one only for a complex query, read model,
-report, export or raw SQL contract that the generated query cannot express.
-
-## Layout
-
-```
-module.go         registration, routes, handlers and migrations
-config.go         what the application passes in
-model.go          the entity, its table and its own rules, and what it may answer with
-BodycompQuery.go  the query aru model:build generates from model.go
-policy.go         who may do what
-service.go        the use cases, and Model access after authorization
-views.go          the files the application takes ownership of
-```
-
-## What is already correct, and has to stay that way
-
-**The policy denies everything.** There is no permit-all branch to delete
-later. The Service calls `security.Authorize` before its first `Bodycomps(db)`
-reach, and every Model terminal requires the Grant that call produced.
-
-**Authorization precedes the Model.** The package audit checks that order in
-every exported Service method. A Model terminal enforces tenant scope; the
-preceding Policy call decides whether the action itself is allowed.
-
-**The tenant comes from `data.Tenant(g)`.** Never from the path, the body, the
-query string or a header. The value on the Grant came from the session; a value
-that arrived with the request is a value the caller chose.
-
-**Who is asking comes from the guard.** `RequireAuth` loads the session once and
-puts the subject on the request; nothing in the module loads it again.
-
-**`arandu.mod.toml` declares what the package does** — network, filesystem,
-exec, migrations — and the suite compares the declaration against what the code
-*calls*, not against what it imports: `net/http` is imported by everything with
-a route and says nothing. A package that says it makes no outbound calls and
-then opens one fails its own tests, and that is the only place the comparison
-happens. `aru doctor` audits the application it is run inside and never loads a
-dependency, so nothing audits an installed package except the package itself.
+Body measurements are personal data about health. Treat them as sensitive.
 
 ## Tests
 
 ```bash
+export GOWORK=off
 go test -race ./...
 ```
 
-The denial suite constructs the Service with a nil database, so even building
-`Bodycomps(nil)` would panic. The structural twin reads the allowed path and
-rejects any Service method that reaches the Model before `Authorize`, and any
-handler that loads the session or picks a status itself. The route tests drive
-the module with no session, with a signed-in subject and with a rejected input,
-on that same handle over no database.
+The formula tests check values computed independently (in double precision)
+from the printed equations, plus the equality of the metric Navy forms with the
+inch forms printed in the Navy regulation. `tests/Unit` calls the package from
+outside, holds the library shape (standard library only, no route, no table, no
+`init`, no clock) and compares `arandu.mod.toml` with what the code calls.
 
 ## Licence
 
-MIT. See [LICENSE.md](LICENSE.md). Copyright HYZIS.
+MIT. See [LICENSE.md](LICENSE.md).
